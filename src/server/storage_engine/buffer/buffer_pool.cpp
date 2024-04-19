@@ -218,6 +218,21 @@ RC FileBufferPool::flush_page_internal(Frame &frame)
 //  3. 写入数据到文件的目标位置
 //  4. 清除frame的脏标记
 //  5. 记录和返回成功
+
+  int64_t offset = static_cast<int64_t>(frame.page_num()) * BP_PAGE_SIZE;
+
+  if (lseek(file_desc_, offset, SEEK_SET) == -1) {
+    LOG_ERROR("Failed to flush page %s:%d, due to failed to lseek:%s.", file_name_.c_str(), frame.page_num(), strerror(errno));
+    return RC::IOERR_SEEK;
+  }
+
+  if (writen(file_desc_, &frame.page(), BP_PAGE_SIZE) != 0) {
+    LOG_ERROR("Failed to flush page %s:%d, due to failed to write:%s.", file_name_.c_str(), frame.page_num(), strerror(errno));
+    return RC::IOERR_WRITE;
+  }
+
+  frame.clear_dirty();
+
   return RC::SUCCESS;
 }
 
@@ -226,6 +241,26 @@ RC FileBufferPool::flush_page_internal(Frame &frame)
  */
 RC FileBufferPool::evict_page(PageNum page_num, Frame *buf)
 {
+  if (!buf) {
+    LOG_ERROR("Failed to evict page %s:%d, due to invalid argument.", file_name_.c_str(), page_num);
+    return RC::INVALID_ARGUMENT;
+  }
+
+  std::scoped_lock lock_guard(lock_);
+
+  if (buf->dirty()) {
+    RC rc = flush_page_internal(*buf);  // Use internal to avoid deadlock
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("Failed to evict page %s:%d, due to failed to flush page.", file_name_.c_str(), page_num);
+      return rc;
+    }
+  }
+
+  if (buf->unpin() != 0) {
+    LOG_ERROR("Failed to evict page %s:%d, due to frame pin count.", file_name_.c_str(), page_num);
+    return RC::INTERNAL;
+  }
+
   return RC::SUCCESS;
 }
 /**
@@ -233,6 +268,16 @@ RC FileBufferPool::evict_page(PageNum page_num, Frame *buf)
  */
 RC FileBufferPool::evict_all_pages()
 {
+  std::list<Frame *> frames_to_evict = frame_manager_.find_list(file_desc_);  // Notice that find_list pin() all frames
+
+  for (auto frame : frames_to_evict) {
+    RC rc = evict_page(frame->page_num(), frame);
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("Failed to evict all pages for %s, due to failed to evict page %d", file_name_.c_str(), frame->page_num());
+      return rc;
+    }
+  }
+
   return RC::SUCCESS;
 }
 
@@ -486,7 +531,21 @@ RC BufferPoolManager::close_file(const char *_file_name)
  */
 RC BufferPoolManager::flush_page(Frame &frame)
 {
-  return RC::SUCCESS;
+  int fd = frame.file_desc();
+
+  lock_.lock();
+
+  auto iter = fd_buffer_pools_.find(fd);
+  if (iter == fd_buffer_pools_.end()) {
+    lock_.unlock();
+    LOG_ERROR("Failed to find FileBufferPool for frame: %s", to_string(frame).c_str());
+    return RC::INTERNAL;
+  }
+
+  FileBufferPool *bp = iter->second;
+  lock_.unlock();
+
+  return bp->flush_page(frame);
 }
 
 static BufferPoolManager *default_bpm = nullptr;
