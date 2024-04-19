@@ -43,7 +43,7 @@ bash build.sh --make -j4
 - 无状态服务的启动
 除了CS架构，TDB还支持无状态的单线程服务启动（类似于SqlLite），通过单独的指令就可以启动
 ```
-./bin/server -f -P cli
+./bin/server -f ../config/serverClient.ini -P cli
 ```
 完成TDB的启动后，就可以在TDB的交互窗口运行SQL了。
 
