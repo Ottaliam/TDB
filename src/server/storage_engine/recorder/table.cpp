@@ -348,6 +348,41 @@ RC Table::insert_record(Record &record)
   }
 
   // TODO [Lab2] 增加索引的处理逻辑
+  // 尝试更新所有索引文件
+  int failed_at = -1;
+  for (int i=0; i < indexes_.size(); i++) {
+    rc = indexes_[i]->insert_entry(record.data(), &record.rid());
+    if (rc != RC::SUCCESS) {
+      failed_at = i;
+      break;
+    }
+  }
+
+  // 如果有索引文件更新失败，撤销所有操作
+  if (failed_at != -1) {
+    // 撤销索引文件更新
+    RC rev_rc = RC::SUCCESS;
+    for (int i=0; i < failed_at; i++) {
+      rev_rc = indexes_[i]->delete_entry(record.data(), &record.rid());
+      if (rev_rc != RC::SUCCESS) {
+        LOG_ERROR("Insert record failed due to insert index failed. Index failed to revert. table name=%s, index name=%c, rc=%s",
+                    table_meta_.name(), indexes_[i]->index_meta().name(), strrc(rev_rc));
+        return rev_rc;
+      }
+    }
+
+    // 撤销插入操作
+    rev_rc = record_handler_->delete_record(&record.rid());
+    if (rev_rc != RC::SUCCESS) {
+      LOG_ERROR("Insert record failed due to insert index failed. Insert record failed to revert. table name=%s, rc=%s",
+                  table_meta_.name(), strrc(rev_rc));
+      return rev_rc;
+    }
+
+    LOG_ERROR("Insert record failed due to insert index failed. table name=%s, rc=%s",
+                  table_meta_.name(), strrc(rc));
+    return rc;
+  }
 
   return rc;
 }
@@ -357,8 +392,40 @@ RC Table::delete_record(const Record &record)
   RC rc = RC::SUCCESS;
 
   // TODO [Lab2] 增加索引的处理逻辑
+  // 尝试更新所有索引文件
+  int failed_at = -1;
+  for (int i=0; i < indexes_.size(); i++) {
+    rc = indexes_[i]->delete_entry(record.data(), &record.rid());
+    if (rc != RC::SUCCESS) {
+      failed_at = i;
+      break;
+    }
+  }
+
+  // 如果有索引文件更新失败，撤销所有操作
+  if (failed_at != -1) {
+    // 撤销索引文件更新
+    RC rev_rc = RC::SUCCESS;
+    for (int i=0; i < failed_at; i++) {
+      rev_rc = indexes_[i]->insert_entry(record.data(), &record.rid());
+      if (rev_rc != RC::SUCCESS) {
+        LOG_ERROR("Delete record failed due to delete index failed. Index failed to revert. table name=%s, index name=%c, rc=%s",
+                    table_meta_.name(), indexes_[i]->index_meta().name(), strrc(rev_rc));
+        return rev_rc;
+      }
+    }
+
+    LOG_ERROR("Delete record failed due to delete index failed. table name=%s, rc=%s",
+                  table_meta_.name(), strrc(rc));
+    return rc;
+  }
 
   rc = record_handler_->delete_record(&record.rid());
+  if (rc != RC::SUCCESS) {
+    LOG_ERROR("Delete record failed. table name=%s, rc=%s", table_meta_.name(), strrc(rc));
+    return rc;
+  }
+
   return rc;
 }
 

@@ -91,16 +91,75 @@ RC BplusTreeIndex::close()
 RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
 {
   // TODO [Lab2] 增加索引项的处理逻辑
+  // 从record中取出multi_field_metas_中的字段值
+  int multi_keys_amount = index_meta_.field_amount();
+  
+  const char *multi_keys[multi_keys_amount];
+  for (int i=0; i < multi_keys_amount; i++) {
+    multi_keys[i] = record + multi_field_metas_[i].offset();
+  }
+
+  // 如果是唯一索引，首先检查是否存在重复的字段值
+  if (index_meta_.is_unique()) {
+    std::list<RID> rids;
+    index_handler_.get_entry(multi_keys, rids, multi_keys_amount);
+    if (!rids.empty()) {
+      LOG_WARN("duplicate key found on unique index insertion. table=%s, index=%s",
+                     table_->name(), index_meta_.name());
+      return RC::RECORD_DUPLICATE_KEY;
+    }
+  }
+
+  // 完成插入操作
+  RC rc = index_handler_.insert_entry(multi_keys, rid, multi_keys_amount);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to insert record into index. table=%s, index=%s, rc=%s",
+              table_->name(), index_meta_.name(), strrc(rc));
+    return rc;
+  }
+
   return RC::SUCCESS;
 }
 
 /**
  * 由于支持多字段索引，需要从record中取出multi_field_metas_中的字段值，作为key。
- * 需要调用BplusTreeHandler的delete_entry完成插入操作。
+ * 需要调用BplusTreeHandler的delete_entry完成删除操作。
  */
 RC BplusTreeIndex::delete_entry(const char *record, const RID *rid)
 {
   // TODO [Lab2] 增加索引项的处理逻辑
+  // 从record中取出multi_field_metas_中的字段值
+  int multi_keys_amount = index_meta_.field_amount();
+  
+  const char *multi_keys[multi_keys_amount];
+  for (int i=0; i < multi_keys_amount; i++) {
+    multi_keys[i] = record + multi_field_metas_[i].offset();
+  }
+
+  // 查询对应的字段值
+  std::list<RID> rids;
+  index_handler_.get_entry(multi_keys, rids, multi_keys_amount);
+  if (rids.empty()) {
+    LOG_WARN("failed to delete record from index due to entry not found. table=%s, index=%s",
+                     table_->name(), index_meta_.name());
+    return RC::RECORD_NOT_EXIST;
+  }
+
+  // 如果是唯一索引，检查字段值是否唯一
+  if (index_meta_.is_unique() && rids.size() != 1) {
+    LOG_WARN("duplicate key found on unique index deletion. table=%s, index=%s",
+                     table_->name(), index_meta_.name());
+    return RC::RECORD_DUPLICATE_KEY;
+  }
+
+  // 完成删除操作
+  RC rc = index_handler_.delete_entry(multi_keys, rid, multi_keys_amount);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to insert record into index. table=%s, index=%s, rc=%s",
+              table_->name(), index_meta_.name(), strrc(rc));
+    return rc;
+  }
+
   return RC::SUCCESS;
 }
 
