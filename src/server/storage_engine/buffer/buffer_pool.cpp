@@ -256,11 +256,6 @@ RC FileBufferPool::evict_page(PageNum page_num, Frame *buf)
     }
   }
 
-  if (buf->unpin() != 0) {
-    LOG_ERROR("Failed to evict page %s:%d, due to frame pin count.", file_name_.c_str(), page_num);
-    return RC::INTERNAL;
-  }
-
   return RC::SUCCESS;
 }
 /**
@@ -276,6 +271,7 @@ RC FileBufferPool::evict_all_pages()
       LOG_ERROR("Failed to evict all pages for %s, due to failed to evict page %d", file_name_.c_str(), frame->page_num());
       return rc;
     }
+    frame->unpin();
   }
 
   return RC::SUCCESS;
