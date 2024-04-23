@@ -49,6 +49,31 @@ RC IndexScanPhysicalOperator::next()
   // 因此该next()方法的主要目的就是将recordHandler获取到的数据填充到current_record_中
   // while(){}
 
+  while(true) {
+    RC rc = index_scanner_->next_entry(&rid, isdelete_);
+    if (rc == RC::RECORD_EOF) {
+      return RC::RECORD_EOF;
+    } else if (rc != RC::SUCCESS) {
+      return rc;
+    }
+
+    record_handler_->get_record(record_page_handler_, &rid, readonly_, &current_record_);
+
+    tuple_._set_record(&current_record_);
+
+    bool filter_result = false;
+    rc = filter(tuple_, filter_result);
+    if (rc != RC::SUCCESS) {
+      return rc;
+    }
+
+    if (filter_result) {
+      break;
+    } else {
+      continue;
+    }
+  }
+
   return RC::SUCCESS;
 }
 

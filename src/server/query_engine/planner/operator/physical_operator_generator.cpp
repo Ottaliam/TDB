@@ -4,6 +4,7 @@
 #include "include/query_engine/planner/operator/physical_operator.h"
 #include "include/query_engine/planner/node/table_get_logical_node.h"
 #include "include/query_engine/planner/operator/table_scan_physical_operator.h"
+#include "include/query_engine/planner/operator/index_scan_physical_operator.h"
 #include "include/query_engine/planner/node/predicate_logical_node.h"
 #include "include/query_engine/planner/operator/predicate_physical_operator.h"
 #include "include/query_engine/planner/node/order_by_logical_node.h"
@@ -23,6 +24,8 @@
 #include "include/query_engine/planner/node/join_logical_node.h"
 #include "include/query_engine/planner/node/group_by_logical_node.h"
 #include "include/query_engine/planner/operator/group_by_physical_operator.h"
+#include "include/query_engine/structor/expression/comparison_expression.h"
+#include "include/query_engine/structor/expression/value_expression.h"
 #include "common/log/log.h"
 #include "include/storage_engine/recorder/table.h"
 
@@ -98,6 +101,25 @@ RC PhysicalOperatorGenerator::create_plan(
   // 通过FieldExpression找到对应的Index, 通过ValueExpression找到对应的Value
   // ps: 由于我们只支持单键索引，所以只需要找到一个等值表达式即可
 
+  FieldExpr *field_expr = nullptr;
+  ValueExpr *value_expr = nullptr;
+
+  for (unique_ptr<Expression> &predicate : predicates) {
+    if (predicate->type() == ExprType::COMPARISON) {
+      auto compare_expr = dynamic_cast<ComparisonExpr*>(predicate.get());
+      if (compare_expr->comp() == EQUAL_TO) {
+        field_expr = dynamic_cast<FieldExpr*>(compare_expr->_left_().get());
+        value_expr = dynamic_cast<ValueExpr*>(compare_expr->_right_().get());
+
+        Table *table = table_get_oper.table();
+        index = table->find_index_by_field(field_expr->field_name());
+        if (index != nullptr) {
+          break;
+        }
+      }
+    }
+  }
+
   if(index == nullptr){
     Table *table = table_get_oper.table();
     auto table_scan_oper = new TableScanPhysicalOperator(table, table_get_oper.table_alias(), table_get_oper.readonly());
@@ -112,6 +134,14 @@ RC PhysicalOperatorGenerator::create_plan(
     // IndexScanPhysicalOperator *operator =
     //              new IndexScanPhysicalOperator(table, index, readonly, &value, true, &value, true);
     // oper = unique_ptr<PhysicalOperator>(operator);
+
+    const Value &value = value_expr->get_value();
+    Table *table = table_get_oper.table();
+    IndexScanPhysicalOperator *index_scan_oper = new IndexScanPhysicalOperator(table, index, table_get_oper.readonly(), &value, true, &value, true);
+    index_scan_oper->isdelete_ = is_delete;
+    index_scan_oper->set_predicates(predicates);
+    oper = unique_ptr<PhysicalOperator>(index_scan_oper);
+    LOG_TRACE("use index scan");
   }
 
   return RC::SUCCESS;
