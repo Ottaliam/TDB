@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include "physical_operator.h"
 #include "include/query_engine/structor/tuple/join_tuple.h"
 
@@ -7,7 +8,7 @@
 class JoinPhysicalOperator : public PhysicalOperator
 {
 public:
-  JoinPhysicalOperator();
+  JoinPhysicalOperator(std::unique_ptr<Expression> expr);
   ~JoinPhysicalOperator() override = default;
 
   PhysicalOperatorType type() const override
@@ -22,5 +23,8 @@ public:
 
 private:
   Trx *trx_ = nullptr;
+  std::unique_ptr<Expression> expression_;
   JoinedTuple joined_tuple_;  //! 当前关联的左右两个tuple
+  Tuple *left_tuple_ = nullptr;
+  Tuple *right_tuple_ = nullptr;
 };

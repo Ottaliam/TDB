@@ -23,6 +23,7 @@ public:
 
 private:
   RC plan_node(SelectStmt *select_stmt, std::unique_ptr<LogicalNode> &logical_operator);
+  RC plan_join_node(FilterStmt *join_filter_stmt, std::unique_ptr<LogicalNode> &logical_operator);
   RC plan_node(FilterStmt *filter_stmt, std::unique_ptr<LogicalNode> &logical_operator);
   RC plan_node(InsertStmt *insert_stmt, std::unique_ptr<LogicalNode> &logical_operator);
   RC plan_node(DeleteStmt *delete_stmt, std::unique_ptr<LogicalNode> &logical_operator);

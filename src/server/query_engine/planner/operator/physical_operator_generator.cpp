@@ -7,6 +7,8 @@
 #include "include/query_engine/planner/node/table_get_logical_node.h"
 #include "include/query_engine/planner/operator/table_scan_physical_operator.h"
 #include "include/query_engine/planner/operator/index_scan_physical_operator.h"
+#include "include/query_engine/planner/node/join_logical_node.h"
+#include "include/query_engine/planner/operator/join_physical_operator.h"
 #include "include/query_engine/planner/node/predicate_logical_node.h"
 #include "include/query_engine/planner/operator/predicate_physical_operator.h"
 #include "include/query_engine/planner/node/order_by_logical_node.h"
@@ -71,7 +73,10 @@ RC PhysicalOperatorGenerator::create(LogicalNode &logical_operator, unique_ptr<P
       return create_plan(static_cast<ExplainLogicalNode &>(logical_operator), oper, is_delete);
     }
     // TODO [Lab3] 实现JoinNode到JoinOperator的转换
-    case LogicalNodeType::JOIN:
+    case LogicalNodeType::JOIN: {
+      return create_plan(static_cast<JoinLogicalNode &>(logical_operator), oper, is_delete);
+    }
+
     case LogicalNodeType::GROUP_BY: {
       return RC::UNIMPLENMENT;
     }
@@ -142,6 +147,31 @@ RC PhysicalOperatorGenerator::create_plan(
     index_scan_oper->set_predicates(predicates);
     oper = unique_ptr<PhysicalOperator>(index_scan_oper);
     LOG_TRACE("use index scan");
+  }
+
+  return RC::SUCCESS;
+}
+
+RC PhysicalOperatorGenerator::create_plan(
+  JoinLogicalNode &join_oper, std::unique_ptr<PhysicalOperator> &oper, bool is_delete)
+{
+  vector<unique_ptr<LogicalNode>> &children_opers = join_oper.children();
+  ASSERT(children_opers.size() == 2, "join logical operator's sub oper number should be 2");
+
+  oper = unique_ptr<PhysicalOperator>(new JoinPhysicalOperator(std::move(join_oper.condition())));
+
+  unique_ptr<PhysicalOperator> child_phy_oper;
+  for (size_t i = 0; i < 2; i++) {
+    LogicalNode &child_oper = *(children_opers[i]);
+
+    RC rc = create(child_oper, child_phy_oper, is_delete);
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("failed to create child operator of join operator. rc=%s", strrc(rc));
+      return rc;
+    }
+
+    oper->add_child(std::move(child_phy_oper));
+    oper->isdelete_ = is_delete;
   }
 
   return RC::SUCCESS;

@@ -10,24 +10,82 @@
  operator.close()
 */
 
-JoinPhysicalOperator::JoinPhysicalOperator() = default;
+JoinPhysicalOperator::JoinPhysicalOperator(std::unique_ptr<Expression> expr) : expression_(std::move(expr))
+{
+  ASSERT(expression_->value_type() == BOOLEANS, "join condition should be BOOLEAN type");
+}
 
 // 执行next()前的准备工作, trx是之后事务中会使用到的，这里不用考虑
 RC JoinPhysicalOperator::open(Trx *trx)
 {
-  return RC::SUCCESS;
+  RC rc = RC::SUCCESS;
+
+  // 存储trx，因为执行过程涉及对子运算符的多次重置，需要多次open()
+  trx_ = trx;
+
+  // 初始化左右子运算符
+  children_[0]->open(trx);
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+  children_[1]->open(trx);
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+
+  // 获取第一个左侧元组
+  if (children_[0]->next() == RC::SUCCESS) {
+    left_tuple_ = children_[0]->current_tuple();
+  }
+
+  return rc;
 }
 
 // 计算出接下来需要输出的数据，并将结果set到join_tuple中
 // 如果没有更多数据，返回RC::RECORD_EOF
 RC JoinPhysicalOperator::next()
 {
-  return RC::RECORD_EOF;
+  if (left_tuple_ == nullptr) {
+    // 如果一开始就没有左侧元组
+    return RC::RECORD_EOF;
+  }
+
+  while (true) {
+    // 尝试从右侧获取匹配元组
+    while (children_[1]->next() == RC::SUCCESS) {
+      right_tuple_ = children_[1]->current_tuple();
+      
+      joined_tuple_.set_left(left_tuple_);
+      joined_tuple_.set_right(right_tuple_);
+
+      Value value;
+      RC rc = expression_->get_value(joined_tuple_, value);
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+
+      if (value.get_boolean()) {
+        return RC::SUCCESS;
+      }
+    }
+
+    // 如果右侧没有更多元组，重置右侧操作符并从左侧获取下一个元组
+    children_[1]->close();
+    children_[1]->open(trx_);
+    if (children_[0]->next() == RC::SUCCESS) {
+      left_tuple_ = children_[0]->current_tuple();
+    } else {
+      left_tuple_ = nullptr;
+      return RC::RECORD_EOF;
+    }
+  }
 }
 
 // 节点执行完成，清理左右子算子
 RC JoinPhysicalOperator::close()
 {
+  children_[0]->close();
+  children_[1]->close();
   return RC::SUCCESS;
 }
 
