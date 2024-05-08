@@ -7,7 +7,7 @@
 class JoinPhysicalOperator : public PhysicalOperator
 {
 public:
-  JoinPhysicalOperator();
+  JoinPhysicalOperator(std::vector<std::unique_ptr<Expression>> &&conditions);
   ~JoinPhysicalOperator() override = default;
 
   PhysicalOperatorType type() const override
@@ -22,5 +22,8 @@ public:
 
 private:
   Trx *trx_ = nullptr;
+  std::vector<std::unique_ptr<Expression>> conditions_;
   JoinedTuple joined_tuple_;  //! 当前关联的左右两个tuple
+  Tuple *left_tuple_ = nullptr;
+  Tuple *right_tuple_ = nullptr;
 };

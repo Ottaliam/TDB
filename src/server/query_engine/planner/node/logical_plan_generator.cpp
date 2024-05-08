@@ -102,17 +102,30 @@ RC LogicalPlanGenerator::plan_node(
   // 1. Table scan node
   //TODO [Lab3] 当前只取一个表作为查询表,当引入Join后需要考虑同时查询多个表的情况
   //参考思路: 遍历tables中的所有Table，针对每个table生成TableGetLogicalNode
-   Table *default_table = tables[0];
-   const char *table_name = default_table->name();
-   std::vector<Field> fields;
-   for (auto *field : all_fields) {
-     if (0 == strcmp(field->table_name(), default_table->name())) {
-       fields.push_back(*field);
-     }
-   }
+  //  Table *default_table = tables[0];
+  //  const char *table_name = default_table->name();
+  //  std::vector<Field> fields;
+  //  for (auto *field : all_fields) {
+  //    if (0 == strcmp(field->table_name(), default_table->name())) {
+  //      fields.push_back(*field);
+  //    }
+  //  }
 
-   root = std::unique_ptr<LogicalNode>(
-       new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+  //  root = std::unique_ptr<LogicalNode>(
+  //      new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+
+    std::vector<std::unique_ptr<LogicalNode>> TableGetLogicalNodes;
+    for (size_t i = 0; i < tables.size(); i++) {
+      std::vector<Field> fields;
+      for (auto field : all_fields) {
+        if (0 == strcmp(field->table_name(), tables[i]->name())) {
+          fields.push_back(*field);
+        }
+      }
+
+      auto node = std::unique_ptr<LogicalNode>(new TableGetLogicalNode(tables[i], select_stmt->table_alias()[i], fields, true));
+      TableGetLogicalNodes.push_back(std::move(node));
+    }
 
   // 2. inner join node
   // TODO [Lab3] 完善Join节点的逻辑计划生成, 需要解析并设置Join涉及的表,以及Join使用到的连接条件
@@ -122,6 +135,25 @@ RC LogicalPlanGenerator::plan_node(
   // * 遍历TableGetLogicalNode
   // * 生成JoinLogicalNode, 通过select_stmt中的join_filter_stmts
   // ps: 需要考虑table数大于2的情况
+
+
+  if (TableGetLogicalNodes.size() == 1) {
+    root = std::move(TableGetLogicalNodes[0]);
+  } else {
+    const std::vector<FilterStmt *> &join_filter_stmts = select_stmt->join_filter_stmts();
+    ASSERT(join_filter_stmts.size() + 1 == TableGetLogicalNodes.size(), "join filter list's size should be the same as join list's size");
+
+    root = std::move(TableGetLogicalNodes[0]);
+
+    for (size_t i = 1; i < TableGetLogicalNodes.size(); i++) {
+      unique_ptr<LogicalNode> join_node;
+      plan_join_node(join_filter_stmts[i - 1], join_node);
+
+      join_node->add_child(std::move(root));
+      join_node->add_child(std::move(TableGetLogicalNodes[i]));
+      root = std::move(join_node);
+    }
+  }
 
 
   // 3. Table filter node
@@ -173,6 +205,19 @@ RC LogicalPlanGenerator::plan_node(
   root = std::move(project_logical_node);
 
   logical_node.swap(root);
+  return RC::SUCCESS;
+}
+
+RC LogicalPlanGenerator::plan_join_node(
+  FilterStmt *join_filter_stmt, std::unique_ptr<LogicalNode> &logical_node)
+{
+  auto conjunction_expr = _transfer_filter_stmt_to_expr(join_filter_stmt);
+  unique_ptr<JoinLogicalNode> join_node;
+  if (conjunction_expr != nullptr) {
+    join_node = std::make_unique<JoinLogicalNode>();
+    join_node->add_condition(std::move(conjunction_expr));
+    logical_node = std::move(join_node);
+  }
   return RC::SUCCESS;
 }
 

@@ -7,6 +7,9 @@
 #include "include/query_engine/planner/node/table_get_logical_node.h"
 #include "include/query_engine/planner/operator/table_scan_physical_operator.h"
 #include "include/query_engine/planner/operator/index_scan_physical_operator.h"
+#include "include/query_engine/planner/node/join_logical_node.h"
+#include "include/query_engine/planner/operator/join_physical_operator.h"
+#include "include/query_engine/planner/operator/hash_join_physical_operator.h"
 #include "include/query_engine/planner/node/predicate_logical_node.h"
 #include "include/query_engine/planner/operator/predicate_physical_operator.h"
 #include "include/query_engine/planner/node/order_by_logical_node.h"
@@ -71,7 +74,10 @@ RC PhysicalOperatorGenerator::create(LogicalNode &logical_operator, unique_ptr<P
       return create_plan(static_cast<ExplainLogicalNode &>(logical_operator), oper, is_delete);
     }
     // TODO [Lab3] 实现JoinNode到JoinOperator的转换
-    case LogicalNodeType::JOIN:
+    case LogicalNodeType::JOIN: {
+      return create_plan(static_cast<JoinLogicalNode &>(logical_operator), oper, is_delete);
+    }
+
     case LogicalNodeType::GROUP_BY: {
       return RC::UNIMPLENMENT;
     }
@@ -142,6 +148,159 @@ RC PhysicalOperatorGenerator::create_plan(
     index_scan_oper->set_predicates(predicates);
     oper = unique_ptr<PhysicalOperator>(index_scan_oper);
     LOG_TRACE("use index scan");
+  }
+
+  return RC::SUCCESS;
+}
+
+static void join_condition_pushdown_left(vector<unique_ptr<LogicalNode>> &children_opers, ComparisonExpr *comp_expr)
+{
+  // JoinLogicalNode 的左侧子节点可能是TableGetLogicalNode或另一个JoinLogicalNode
+  if (children_opers[0]->type() == LogicalNodeType::TABLE_GET) {
+    auto left_child_oper = static_cast<TableGetLogicalNode*>(children_opers[0].get());
+    left_child_oper->predicates().push_back(unique_ptr<Expression>(comp_expr));
+  } else {
+    auto left_child_oper = static_cast<JoinLogicalNode*>(children_opers[0].get());
+    left_child_oper->add_condition(unique_ptr<Expression>(comp_expr));
+  }
+}
+
+static void join_condition_pushdown_right(vector<unique_ptr<LogicalNode>> &children_opers, ComparisonExpr *comp_expr)
+{
+  // JoinLogicalNode 的右侧子节点一定是TableGetLogicalNode
+  auto right_child_oper = static_cast<TableGetLogicalNode*>(children_opers[1].get());
+  right_child_oper->predicates().push_back(unique_ptr<Expression>(comp_expr));
+}
+
+static void join_condition_pushdown(vector<unique_ptr<LogicalNode>> &children_opers, ComparisonExpr *comp_expr)
+{
+  if (comp_expr->left()->type() == ExprType::VALUE) {
+    // Value = Value，恒真或横假，往一边下推即可，这里往可能更深的左侧下推
+    join_condition_pushdown_left(children_opers, comp_expr);
+  } else {
+    // Field = Value  ||   Field = Field
+    auto right_child_oper = static_cast<TableGetLogicalNode*>(children_opers[1].get());
+    bool onright = (static_cast<FieldExpr*>(comp_expr->left().get())->field().table() == right_child_oper->table());
+
+    if (onright) {
+      join_condition_pushdown_right(children_opers, comp_expr);
+    } else {
+      join_condition_pushdown_left(children_opers, comp_expr);
+    }
+  }
+}
+
+static void process_hash_and_pushdown(
+  vector<unique_ptr<Expression>> &condition_list, vector<unique_ptr<LogicalNode>> &children_opers,
+  bool &use_hash, unique_ptr<ComparisonExpr> &hash_condition)
+{
+  for (auto it = condition_list.begin(); it != condition_list.end(); ) {
+    if ((*it)->type() != ExprType::COMPARISON) {
+      ++it;
+      continue;
+    }
+
+    auto comp_expr = static_cast<ComparisonExpr*>(it->get());
+
+    // 目前只考虑等值条件的优化
+    if (comp_expr->comp() != CompOp::EQUAL_TO) {
+      ++it;
+      continue;
+    }
+
+    if (comp_expr->left()->type() == ExprType::FIELD && comp_expr->left()->type() == ExprType::FIELD) {
+      // Field = Field
+      
+      // 首先检查是否在同侧子节点 (右侧子节点一定是TableGetLogicalNode)
+      auto right_child_oper = static_cast<TableGetLogicalNode*>(children_opers[1].get());
+      bool onright_1 = (static_cast<FieldExpr*>(comp_expr->left().get())->field().table() == right_child_oper->table());
+      bool onright_2 = (static_cast<FieldExpr*>(comp_expr->right().get())->field().table() == right_child_oper->table());
+
+      if (onright_1 == onright_2) {
+        // 同侧，条件下推
+        join_condition_pushdown(children_opers, static_cast<ComparisonExpr*>(it->release()));
+        it = condition_list.erase(it);
+      } else {
+        // 异侧，本次join使用hash join加速
+        if (use_hash) { // 如果已经设置了使用hash
+          ++it;
+          continue;
+        } else {
+          use_hash = true;
+          hash_condition = unique_ptr<ComparisonExpr>(static_cast<ComparisonExpr*>(it->release()));
+          if (onright_1) {
+            // 确保表达式左右与操作符左右对应
+            swap(hash_condition->left(), hash_condition->right());
+          }
+          it = condition_list.erase(it);
+        }
+      }
+    } else if (comp_expr->left()->type() == ExprType::FIELD && comp_expr->left()->type() == ExprType::VALUE) {
+      // Field = Value，条件下推
+      join_condition_pushdown(children_opers, static_cast<ComparisonExpr*>(it->release()));
+      it = condition_list.erase(it);
+    } else if (comp_expr->left()->type() == ExprType::VALUE && comp_expr->left()->type() == ExprType::FIELD) {
+      // Value = Field，左右交换之后条件下推
+      swap(comp_expr->left(), comp_expr->right());
+      join_condition_pushdown(children_opers, static_cast<ComparisonExpr*>(it->release()));
+      it = condition_list.erase(it);
+    } else if (comp_expr->left()->type() == ExprType::VALUE && comp_expr->left()->type() == ExprType::VALUE) {
+      // Value = Value，条件下推
+      join_condition_pushdown(children_opers, static_cast<ComparisonExpr*>(it->release()));
+      it = condition_list.erase(it);
+    } else {
+      ++it;
+      continue;
+    }
+  }
+}
+
+RC PhysicalOperatorGenerator::create_plan(
+  JoinLogicalNode &join_oper, unique_ptr<PhysicalOperator> &oper, bool is_delete)
+{
+  vector<unique_ptr<LogicalNode>> &children_opers = join_oper.children();
+  ASSERT(children_opers.size() == 2, "join logical operator's sub oper number should be 2");
+
+  /*
+    !按照当前的语法解析&分析预处理实现，所有条件被视作用相同的运算符(AND | OR)连接，该连接符是条件最左边的那个
+    INSERT INTO join_table_1 VALUES (1, 'a');
+    INSERT INTO join_table_1 VALUES (2, 'b');
+    INSERT INTO join_table_1 VALUES (3, 'c');
+    TDB > select * from join_table_1 where id=2 or id=1 and name='c'
+    id | name
+    1 |    a
+    2 |    b
+    3 |    c
+    !在当前的语法解析&分析预处理实现下，condition (即condition_[0]) 一定是若干ComparisonExpr的ConjunctionExpr
+  */
+  ConjunctionExpr *condition = static_cast<ConjunctionExpr*>(join_oper.condition()[0].get());
+
+  bool use_hash = false;
+  unique_ptr<ComparisonExpr> hash_condition;
+
+  if (condition->conjunction_type() == ConjunctionType::AND) {  // 仅AND连接的条件可以优化
+    process_hash_and_pushdown(condition->children(), children_opers, use_hash, hash_condition);
+  }
+  process_hash_and_pushdown(join_oper.condition(), children_opers, use_hash, hash_condition);
+
+  if (use_hash) {
+    LOG_TRACE("use hash join");
+    oper = unique_ptr<PhysicalOperator>(new HashJoinPhysicalOperator(std::move(join_oper.condition()), std::move(hash_condition)));
+  } else {
+    LOG_TRACE("use nested loop join");
+    oper = unique_ptr<PhysicalOperator>(new JoinPhysicalOperator(std::move(join_oper.condition())));
+  }
+
+  oper->isdelete_ = is_delete;
+  for (size_t i = 0; i < 2; i++) {
+    unique_ptr<PhysicalOperator> child_phy_oper;
+    RC rc = create(*children_opers[i], child_phy_oper, is_delete);
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("failed to create child operator of predicate operator. rc=%s", strrc(rc));
+      return rc;
+    }
+
+    oper->add_child(std::move(child_phy_oper));
   }
 
   return RC::SUCCESS;

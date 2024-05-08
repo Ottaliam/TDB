@@ -5,6 +5,7 @@
 #include "src/server/include/common/rc.h"
 #include "physical_operator.h"
 #include "src/server/include/query_engine/planner/node/logical_node.h"
+#include "src/server/include/query_engine/structor/expression/conjunction_expression.h"
 
 class TableGetLogicalNode;
 class PredicateLogicalNode;
@@ -33,6 +34,7 @@ public:
 
 private:
   RC create_plan(TableGetLogicalNode &logical_oper, std::unique_ptr<PhysicalOperator> &oper, bool is_delete = false);
+  RC create_plan(JoinLogicalNode &logical_oper, std::unique_ptr<PhysicalOperator> &oper, bool is_delete = false);
   RC create_plan(PredicateLogicalNode &logical_oper, std::unique_ptr<PhysicalOperator> &oper, bool is_delete = false);
   RC create_plan(ProjectLogicalNode &logical_oper, std::unique_ptr<PhysicalOperator> &oper, bool is_delete = false);
   RC create_plan(AggrLogicalNode &logical_oper, std::unique_ptr<PhysicalOperator> &oper);

@@ -14,6 +14,26 @@ public:
    species_.clear();
  }
 
+ RowTuple(const RowTuple& other) {
+    // 深拷贝 species_
+    species_.reserve(other.species_.size());
+    for (FieldExpr* spec : other.species_) {
+        species_.push_back(new FieldExpr(*spec));
+    }
+
+    // 深拷贝 Record
+    if (other.record_) {
+        record_ = new Record(*other.record_);
+    } else {
+        record_ = nullptr;
+    }
+
+    // 复制其他成员
+    bitmap_ = other.bitmap_;
+    table_ = other.table_;
+    order_set_ = other.order_set_;
+ }
+
  const TupleType tuple_type() const override { return RowTuple_Type; }
 
  void get_record(std::vector<Record *> &records) const override
