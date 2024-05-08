@@ -5,6 +5,7 @@
 #include "src/server/include/common/rc.h"
 #include "physical_operator.h"
 #include "src/server/include/query_engine/planner/node/logical_node.h"
+#include "src/server/include/query_engine/structor/expression/conjunction_expression.h"
 
 class TableGetLogicalNode;
 class PredicateLogicalNode;

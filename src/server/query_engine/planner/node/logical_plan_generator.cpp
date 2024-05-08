@@ -215,7 +215,7 @@ RC LogicalPlanGenerator::plan_join_node(
   unique_ptr<JoinLogicalNode> join_node;
   if (conjunction_expr != nullptr) {
     join_node = std::make_unique<JoinLogicalNode>();
-    join_node->set_condition(std::move(conjunction_expr));
+    join_node->add_condition(std::move(conjunction_expr));
     logical_node = std::move(join_node);
   }
   return RC::SUCCESS;

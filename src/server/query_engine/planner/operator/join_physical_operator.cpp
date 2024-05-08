@@ -10,9 +10,11 @@
  operator.close()
 */
 
-JoinPhysicalOperator::JoinPhysicalOperator(std::unique_ptr<Expression> expr) : expression_(std::move(expr))
+JoinPhysicalOperator::JoinPhysicalOperator(std::vector<std::unique_ptr<Expression>> &&conditions) : conditions_(std::move(conditions))
 {
-  ASSERT(expression_->value_type() == BOOLEANS, "join condition should be BOOLEAN type");
+  for (auto &condition : conditions) {
+    ASSERT(condition->value_type() == BOOLEANS, "join condition should be BOOLEAN type");
+  }
 }
 
 // 执行next()前的准备工作, trx是之后事务中会使用到的，这里不用考虑
@@ -59,13 +61,23 @@ RC JoinPhysicalOperator::next()
       joined_tuple_.set_right(right_tuple_);
 
       Value value;
-      RC rc = expression_->get_value(joined_tuple_, value);
-      if (rc != RC::SUCCESS) {
-        return rc;
+      bool ok = true;
+      for (auto &condition : conditions_) {
+        RC rc = condition->get_value(joined_tuple_, value);
+        if (rc != RC::SUCCESS) {
+            return rc;
+        }
+
+        if (!value.get_boolean()) {
+            ok = false;
+            break;
+        }
       }
 
-      if (value.get_boolean()) {
+      if (ok) {
         return RC::SUCCESS;
+      } else {
+        continue;
       }
     }
 

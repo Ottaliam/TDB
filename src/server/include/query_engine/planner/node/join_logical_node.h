@@ -15,16 +15,17 @@ public:
     return LogicalNodeType::JOIN;
   }
 
-  void set_condition(std::unique_ptr<Expression> &&condition)
+  void add_condition(std::unique_ptr<Expression> &&condition)
   {
-    condition_ = std::move(condition);
+    condition_.push_back(std::move(condition));
   }
 
-  std::unique_ptr<Expression> &condition()
+  std::vector<std::unique_ptr<Expression>> &condition()
   {
     return condition_;
   }
 private:
   // Join的条件，目前只支持等值连接
-  std::unique_ptr<Expression> condition_;
+  // 多个条件之间视作用AND连接，其中第一个元素[0]是解析出的条件，后续元素是可能的下推条件
+  std::vector<std::unique_ptr<Expression>> condition_;
 };
