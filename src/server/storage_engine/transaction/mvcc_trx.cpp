@@ -109,6 +109,23 @@ RC MvccTrx::insert_record(Table *table, Record &record)
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现记录的插入，相关提示见文档
 
+  // 获取当前事务的版本号
+  int32_t trx_id = this->trx_id_;
+
+  // 设置record的版本号，begin_xid = -trx_id，end_xid = max，表示插入该记录，但对其他事务还不可见
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+  begin_xid_field.set_int(record, -trx_id);
+  end_xid_field.set_int(record, trx_kit_.max_trx_id());
+
+  // 插入记录
+  rc = table->insert_record(record);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to insert record into table");
+    return rc;
+  }
+
+  // 记录插入操作
   pair<OperationSet::iterator, bool> ret = operations_.insert(Operation(Operation::Type::INSERT, table, record.rid()));
   if (!ret.second) {
     rc = RC::INTERNAL;
@@ -121,6 +138,20 @@ RC MvccTrx::delete_record(Table *table, Record &record)
 {
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现逻辑上的删除，相关提示见文档
+
+  // 获取当前事务的版本号
+  int32_t trx_id = this->trx_id_;
+
+  // 待删除record应该对当前事务可见无冲突
+  rc = visit_record(table, record, false);
+  if (rc != RC::SUCCESS) {
+    return RC::INTERNAL;
+  }
+
+  // 设置record的版本号，begin_xid不变，end_xid = -trx_id，表示该记录对当前事务不可见，但对其他事务仍然可见
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+  end_xid_field.set_int(record, -trx_id);
 
   operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
   return rc;
@@ -140,7 +171,61 @@ RC MvccTrx::visit_record(Table *table, Record &record, bool readonly)
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现记录是否可见的判断，相关提示见文档
 
-  return rc;
+  // 获取当前事务的版本号
+  int32_t trx_id = this->trx_id_;
+
+  // 获取目标record的版本号信息
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+  int32_t begin_xid = begin_xid_field.get_int(record);
+  int32_t end_xid = end_xid_field.get_int(record);
+
+  // 未提交的插入
+  if (begin_xid < 0) {
+    if (-begin_xid == trx_id) {
+      // 当前事务的未提交的插入，可见
+      return RC::SUCCESS;
+    } else {
+      // 其他事务的未提交的插入
+      // 读：不可见，写：冲突
+      if (readonly) {
+        return RC::RECORD_INVISIBLE;
+      } else {
+        return RC::LOCKED_CONCURRENCY_CONFLICT;
+      }
+    }
+  }
+
+  // 未提交的删除
+  if (end_xid < 0) {
+    if (-end_xid == trx_id) {
+      // 当前事务的未提交的删除，不可见
+      return RC::RECORD_INVISIBLE;
+    } else {
+      // 其他事务的未提交的删除
+      // 读：可见，写：冲突
+      if (readonly) {
+        return RC::SUCCESS;
+      } else {
+        return RC::LOCKED_CONCURRENCY_CONFLICT;
+      }
+    }
+  }
+
+  // 已提交的记录，正常判断
+  if (begin_xid <= trx_id && trx_id <= end_xid) {
+    // 可见，正常处理
+    return RC::SUCCESS;
+  } else {
+    // 不可见
+    // 读：不可见，写：不存在
+    // 这样，删除一条不可见记录时才会正确报错，而不是跳过（导致EOF->SUCCESS)
+    if (readonly) {
+      return RC::RECORD_INVISIBLE;
+    } else {
+      return RC::RECORD_NOT_EXIST;
+    }
+  }
 }
 
 RC MvccTrx::start_if_need()
