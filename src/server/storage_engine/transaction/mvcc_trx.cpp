@@ -164,7 +164,8 @@ RC MvccTrx::delete_record(Table *table, Record &record)
    * @param readonly 是否只读访问
    * @return RC      - SUCCESS 成功
    *                 - RECORD_INVISIBLE 此数据对当前事务不可见，应该跳过
-   *                 - LOCKED_CONCURRENCY_CONFLICT 与其它事务有冲突
+   *                 - LOCKED_CONCURRENCY_CONFLICT 与其它事务有冲突 (尝试以写的方式访问未提交不可见数据)
+   *                 - RECORD_NOT_EXIST 尝试以写的方式访问已提交不可见数据
  */
 RC MvccTrx::visit_record(Table *table, Record &record, bool readonly)
 {
