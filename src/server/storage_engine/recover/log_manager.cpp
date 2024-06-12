@@ -1,5 +1,6 @@
 #include "include/storage_engine/recover/log_manager.h"
 #include "include/storage_engine/transaction/trx.h"
+#include "include/storage_engine/transaction/mvcc_trx.h"
 
 RC LogEntryIterator::init(LogFile &log_file)
 {
@@ -120,10 +121,55 @@ RC LogManager::sync()
 // TODO [Lab5] 需要同学们补充代码，相关提示见文档
 RC LogManager::recover(Db *db)
 {
-  TrxManager *trx_manager = GCTX.trx_manager_;
+  MvccTrxManager *trx_manager = dynamic_cast<MvccTrxManager*>(GCTX.trx_manager_);
   ASSERT(trx_manager != nullptr, "cannot do recover that trx_manager is null");
 
   // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+
+  LogEntryIterator log_entry_iterator = LogEntryIterator();
+  log_entry_iterator.init(*log_file_);
+
+  int max_trx_id = 0;
+  map<int32_t, queue<LogEntry>> redo_list;
+
+  while (log_entry_iterator.next() == RC::SUCCESS && log_entry_iterator.valid()) {
+    LogEntry log_entry = log_entry_iterator.log_entry();
+    redo_list[log_entry.trx_id()].push(log_entry);
+    
+    // 虽然不一定所有事务都需要重做，但是都需要更新trx_id，否则按原trx_id恢复时会造成可见性问题
+    // 例如，恢复中以trx_id=3插入了数据
+    // 那么如果在新启动系统的前两个事务进行查询，则看不到这条数据
+    if (log_entry.log_type() == LogEntryType::MTR_BEGIN || log_entry.log_type() == LogEntryType::MTR_COMMIT) {
+      trx_manager->next_trx_id();
+    }
+  }
+
+  for (auto &pair : redo_list) {
+    queue<LogEntry> &entry_queue = pair.second;
+    
+    // 只有已提交的事务需要重做
+    if (!entry_queue.empty() && entry_queue.back().log_type() == LogEntryType::MTR_COMMIT) {
+      // 重做该事务的所有操作
+      while (!entry_queue.empty()) {
+        LogEntry log_entry = entry_queue.front();
+        entry_queue.pop();
+
+        switch (log_entry.log_type()) {
+          case LogEntryType::MTR_BEGIN:
+            trx_manager->create_trx(log_entry.trx_id());
+            break;
+          case LogEntryType::MTR_COMMIT:
+          case LogEntryType::MTR_ROLLBACK:
+          case LogEntryType::INSERT:
+          case LogEntryType::DELETE:
+            trx_manager->find_trx(log_entry.trx_id())->redo(db, log_entry);
+            break;
+          default:
+            LOG_WARN("Error log for trx: %d", log_entry.trx_id());
+        }
+      }
+    }
+  }
 
   return RC::SUCCESS;
 }

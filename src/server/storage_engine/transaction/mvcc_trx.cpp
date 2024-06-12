@@ -132,6 +132,14 @@ RC MvccTrx::insert_record(Table *table, Record &record)
     rc = RC::INTERNAL;
     LOG_WARN("failed to insert operation(insertion) into operation set: duplicate");
   }
+
+  // 写入日志
+  log_manager_->append_record_log(
+    LogEntryType::INSERT, trx_id,
+    table->table_id(), record.rid(),
+    record.len(), 0, record.data()
+  );
+
   return rc;
 }
 
@@ -154,7 +162,16 @@ RC MvccTrx::delete_record(Table *table, Record &record)
   trx_fields(table, begin_xid_field, end_xid_field);
   end_xid_field.set_int(record, -trx_id);
 
+  // 记录删除操作
   operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
+
+  // 写入日志
+  log_manager_->append_record_log(
+    LogEntryType::DELETE, trx_id,
+    table->table_id(), record.rid(),
+    record.len(), 0, record.data()
+  );
+
   return rc;
 }
 
@@ -374,6 +391,13 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
       const RecordEntry &record_entry = log_entry.record_entry();
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      table = db->find_table(record_entry.table_id_);
+      
+      Record record;
+      record.set_rid(record_entry.rid_);
+      record.set_data(record_entry.data_ + record_entry.data_offset_, record_entry.data_len_);
+
+      table->recover_insert_record(record);
 
       operations_.insert(Operation(Operation::Type::INSERT, table, record_entry.rid_));
     } break;
@@ -383,6 +407,14 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
       const RecordEntry &record_entry = log_entry.record_entry();
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      table = db->find_table(record_entry.table_id_);
+
+      auto logical_delete = [this, table, log_entry](Record &record) {
+          Field begin_xid_field, end_xid_field;
+          trx_fields(table, begin_xid_field, end_xid_field);
+          end_xid_field.set_int(record, -log_entry.trx_id());
+      };
+      table->visit_record(record_entry.rid_, false, logical_delete);
 
       operations_.insert(Operation(Operation::Type::DELETE, table, record_entry.rid_));
     } break;
@@ -390,12 +422,14 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
     case LogEntryType::MTR_COMMIT: {
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      commit_with_trx_id(log_entry.commit_entry().commit_xid_);
 
     } break;
 
     case LogEntryType::MTR_ROLLBACK: {
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+      rollback();
 
     } break;
 
